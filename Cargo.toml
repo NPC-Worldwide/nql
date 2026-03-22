@@ -1,0 +1,19 @@
+[package]
+name = "nql"
+version = "0.1.0"
+edition = "2021"
+description = "NQL — SQL compiler with AI function calls targeting multiple databases"
+
+[[bin]]
+name = "nql"
+path = "src/main.rs"
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled", "functions"] }
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }
+clap = { version = "4", features = ["derive"] }
+thiserror = "1"
