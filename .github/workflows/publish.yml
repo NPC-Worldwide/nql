@@ -1,0 +1,191 @@
+name: publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  cargo-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo publish
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  build-binaries:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: install cross deps (linux arm64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          mkdir -p .cargo
+          cat >> .cargo/config.toml <<EOF
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+          EOF
+      - name: build
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: package (unix)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/nql dist/
+          cp README.md LICENSE dist/
+          cd dist && tar czf nql-${{ matrix.target }}.tar.gz nql README.md LICENSE
+      - name: package (windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/${{ matrix.target }}/release/nql.exe dist/
+          Copy-Item README.md, LICENSE dist/
+          Compress-Archive -Path dist/nql.exe,dist/README.md,dist/LICENSE -DestinationPath dist/nql-${{ matrix.target }}.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nql-${{ matrix.target }}
+          path: dist/nql-${{ matrix.target }}.*
+
+  github-release:
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: compute checksums
+        run: |
+          cd artifacts && find . -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec sha256sum {} \; | sed 's|\./[^/]*/||' > ../SHA256SUMS
+      - name: publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+            SHA256SUMS
+          generate_release_notes: true
+
+  homebrew-tap:
+    needs: github-release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - name: update homebrew tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "HOMEBREW_TAP_TOKEN not set — skipping tap update. Set a PAT with repo access to npc-worldwide/homebrew-tap to enable."
+            exit 0
+          fi
+          VERSION="${GITHUB_REF_NAME#v}"
+          REPO_URL="https://github.com/${{ github.repository }}"
+          MAC_INTEL_URL="$REPO_URL/releases/download/${GITHUB_REF_NAME}/nql-x86_64-apple-darwin.tar.gz"
+          MAC_ARM_URL="$REPO_URL/releases/download/${GITHUB_REF_NAME}/nql-aarch64-apple-darwin.tar.gz"
+          LNX_INTEL_URL="$REPO_URL/releases/download/${GITHUB_REF_NAME}/nql-x86_64-unknown-linux-gnu.tar.gz"
+          LNX_ARM_URL="$REPO_URL/releases/download/${GITHUB_REF_NAME}/nql-aarch64-unknown-linux-gnu.tar.gz"
+          MAC_INTEL_SHA=$(curl -sL "$MAC_INTEL_URL" | sha256sum | cut -d' ' -f1)
+          MAC_ARM_SHA=$(curl -sL "$MAC_ARM_URL" | sha256sum | cut -d' ' -f1)
+          LNX_INTEL_SHA=$(curl -sL "$LNX_INTEL_URL" | sha256sum | cut -d' ' -f1)
+          LNX_ARM_SHA=$(curl -sL "$LNX_ARM_URL" | sha256sum | cut -d' ' -f1)
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/npc-worldwide/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          cat > tap/Formula/nql.rb <<EOF
+          class Nql < Formula
+            desc "NQL — SQL compiler with AI function calls"
+            homepage "${REPO_URL}"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "${MAC_ARM_URL}"
+                sha256 "${MAC_ARM_SHA}"
+              else
+                url "${MAC_INTEL_URL}"
+                sha256 "${MAC_INTEL_SHA}"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "${LNX_ARM_URL}"
+                sha256 "${LNX_ARM_SHA}"
+              else
+                url "${LNX_INTEL_URL}"
+                sha256 "${LNX_INTEL_SHA}"
+              end
+            end
+
+            def install
+              bin.install "nql"
+            end
+
+            test do
+              assert_match "nql", shell_output("#{bin}/nql --help")
+            end
+          end
+          EOF
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/nql.rb
+          git commit -m "nql ${VERSION}"
+          git push
+
+  pypi-publish:
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # trusted publisher on PyPI
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: build wheels via maturin
+        run: |
+          pip install maturin
+          maturin build --release --bindings bin --out wheels || true
+      - name: publish to PyPI
+        env:
+          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -z "$MATURIN_PYPI_TOKEN" ]; then
+            echo "PYPI_API_TOKEN not set — skipping PyPI publish. Add as repo secret to enable."
+            exit 0
+          fi
+          pip install maturin
+          maturin publish --bindings bin

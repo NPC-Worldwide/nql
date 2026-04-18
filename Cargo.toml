@@ -2,7 +2,15 @@
 name = "nql"
 version = "0.1.0"
 edition = "2021"
+authors = ["NPC Worldwide <info@npcworldwi.de>"]
 description = "NQL — SQL compiler with AI function calls targeting multiple databases"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/npc-worldwide/nql"
+homepage = "https://github.com/npc-worldwide/nql"
+documentation = "https://docs.rs/nql"
+keywords = ["sql", "ai", "llm", "compiler", "dbt"]
+categories = ["command-line-utilities", "database"]
 
 [[bin]]
 name = "nql"
