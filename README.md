@@ -1,5 +1,7 @@
 # nql
 
+![nql logo](nql.png)
+
 **NQL** — SQL compiler with AI function calls, targeting multiple databases. A dbt-style runner for models that can call LLMs from inside SQL.
 
 ## Install
