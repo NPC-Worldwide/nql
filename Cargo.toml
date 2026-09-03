@@ -1,6 +1,6 @@
 [package]
 name = "nql"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["NPC Worldwide <info@npcworldwi.de>"]
 description = "NQL — SQL compiler with AI function calls targeting multiple databases"

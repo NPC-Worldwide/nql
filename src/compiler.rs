@@ -46,6 +46,38 @@ impl Compiler {
         }
     }
 
+    /// Split a comma-separated argument string while respecting single-quoted
+    /// strings and square brackets. This prevents internal commas inside SQL
+    /// literals or JSON arrays from being treated as delimiters.
+    fn split_sql_args(args: &str) -> Vec<&str> {
+        let mut parts = Vec::new();
+        let mut start = 0;
+        let mut in_single_quote = false;
+        let mut bracket_depth: usize = 0;
+        let chars: Vec<char> = args.chars().collect();
+
+        for (i, &ch) in chars.iter().enumerate() {
+            if ch == '\'' {
+                in_single_quote = !in_single_quote;
+            } else if !in_single_quote {
+                match ch {
+                    '[' => bracket_depth += 1,
+                    ']' => bracket_depth = bracket_depth.saturating_sub(1),
+                    ',' if bracket_depth == 0 => {
+                        parts.push(args[start..i].trim());
+                        start = i + 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let tail = args[start..].trim();
+        if !tail.is_empty() {
+            parts.push(tail);
+        }
+        parts
+    }
+
     /// Set the default schema for ref resolution.
     pub fn with_schema(mut self, schema: Option<String>) -> Self {
         self.default_schema = schema;
@@ -170,7 +202,7 @@ impl Compiler {
     // ── PostgreSQL: pgai extension ─────────────────────────────────────
 
     fn translate_postgresql(&self, func_name: &str, args: &str) -> String {
-        let arg_parts: Vec<&str> = args.split(',').map(|a| a.trim()).collect();
+        let arg_parts = Self::split_sql_args(args);
 
         match func_name {
             "generate_text" => {
@@ -222,7 +254,7 @@ impl Compiler {
             "summarize" => format!("SNOWFLAKE.CORTEX.SUMMARIZE({})", args),
             "analyze_sentiment" => format!("SNOWFLAKE.CORTEX.SENTIMENT({})", args),
             "translate" => {
-                let arg_parts: Vec<&str> = args.split(',').map(|a| a.trim()).collect();
+                let arg_parts = Self::split_sql_args(args);
                 let col = arg_parts.first().copied().unwrap_or("''");
                 let lang = if arg_parts.len() > 1 {
                     arg_parts[1]
@@ -260,7 +292,7 @@ impl Compiler {
                 )
             }
             "translate" => {
-                let arg_parts: Vec<&str> = args.split(',').map(|a| a.trim()).collect();
+                let arg_parts = Self::split_sql_args(args);
                 let col = arg_parts.first().copied().unwrap_or("''");
                 let lang = if arg_parts.len() > 1 {
                     arg_parts[1]
@@ -294,7 +326,7 @@ impl Compiler {
                 format!("(AI.GENERATE(CONCAT('Classify the following text into a category. Return only the category name.\\n\\n', {}))).result", args)
             }
             "classify_into" => {
-                let arg_parts: Vec<&str> = args.split(',').map(|a| a.trim()).collect();
+                let arg_parts = Self::split_sql_args(args);
                 let col = arg_parts.first().copied().unwrap_or("''");
                 let categories = arg_parts.get(1).copied().unwrap_or("''");
                 format!("(AI.GENERATE(CONCAT('Classify the following text into one of these categories: ', {}, '. Return only the category name.\\n\\n', {}))).result", categories, col)
@@ -306,7 +338,7 @@ impl Compiler {
                 format!("(AI.GENERATE(CONCAT('Detect the language of this text. Return only the ISO 639-1 language code.\\n\\n', {}))).result", args)
             }
             "answer_question" => {
-                let arg_parts: Vec<&str> = args.split(',').map(|a| a.trim()).collect();
+                let arg_parts = Self::split_sql_args(args);
                 let context = arg_parts.first().copied().unwrap_or("''");
                 let question = arg_parts.get(1).copied().unwrap_or("''");
                 format!("(AI.GENERATE(CONCAT('Based on the following context, answer the question.\\n\\nContext: ', {}, '\\n\\nQuestion: ', {}))).result", context, question)
@@ -326,6 +358,49 @@ impl Compiler {
             "zoom_in" => {
                 format!("(AI.GENERATE(CONCAT('Look at these facts and infer new implied facts. Return as JSON array of objects with \"statement\" and \"inferred_from\" fields.\\n\\n', {}))).result", args)
             }
+            "abstract" => {
+                format!("(AI.GENERATE(CONCAT('Create more abstract categories from this list of groups. Group names should never be more than two words, should not contain gerunds, and should never contain conjunctions like AND or OR. Generate no more than 5 new concepts and no fewer than 2. Return as JSON: {{\\\"groups\\\": [{{\\\"name\\\": \\\"abstract category name\\\"}}]}}.\\n\\nGroups: ', {}))).result", args)
+            }
+            "generate_groups" => {
+                format!("(AI.GENERATE(CONCAT('Generate conceptual groups for these facts. Group names should never be more than two words, should not contain gerunds, and should never contain conjunctions like AND or OR. Return as JSON: {{\\\"groups\\\": [{{\\\"name\\\": \\\"group name\\\"}}]}}.\\n\\nFacts: ', {}))).result", args)
+            }
+            "remove_redundant_groups" => {
+                format!("(AI.GENERATE(CONCAT('Remove redundant groups from this list. Merge similar groups and keep only distinct concepts. Group names should never be more than two words, should not contain gerunds, and should never contain conjunctions like AND or OR. Return as JSON: {{\\\"groups\\\": [{{\\\"name\\\": \\\"final group name\\\"}}]}}.\\n\\nGroups: ', {}))).result", args)
+            }
+            "assign_groups_to_fact" => {
+                let arg_parts = Self::split_sql_args(args);
+                let fact = arg_parts.first().copied().unwrap_or("''");
+                let groups = arg_parts.get(1).copied().unwrap_or("''");
+                format!("(AI.GENERATE(CONCAT('Given this fact, assign it to any relevant groups. Return as JSON: {{\\\"groups\\\": [\\\"list of group names\\\"]}}.\\n\\nFact: ', {}, '\\n\\nGroups: ', {}))).result", fact, groups)
+            }
+            "get_related_concepts_multi" => {
+                let arg_parts = Self::split_sql_args(args);
+                let node_name = arg_parts.first().copied().unwrap_or("''");
+                let node_type = arg_parts.get(1).copied().unwrap_or("'fact'");
+                let concepts = arg_parts.get(2).copied().unwrap_or("''");
+                format!("(AI.GENERATE(CONCAT('Which of the following concepts relate to the given ', {}, '? Select all that apply from most specific to most abstract. ', INITCAP({}), ': \"', {}, '\"\\n\\nAvailable Concepts: ', {}, '\\n\\nReturn as JSON: {{\\\"related_concepts\\\": [\\\"Concept A\\\", \\\"Concept B\\\"]}}'))).result", node_type, node_type, node_name, concepts)
+            }
+            "get_related_facts_llm" => {
+                let arg_parts = Self::split_sql_args(args);
+                let new_fact = arg_parts.first().copied().unwrap_or("''");
+                let existing_facts = arg_parts.get(1).copied().unwrap_or("''");
+                format!("(AI.GENERATE(CONCAT('A new fact has been learned: \"', {}, '\". Which of the following existing facts are directly related to it (causally, sequentially, or thematically)? Select only the most direct and meaningful connections.\\n\\nExisting Facts: ', {}, '\\n\\nReturn as JSON: {{\\\"related_facts\\\": [\\\"statement of a related fact\\\"]}}'))).result", new_fact, existing_facts)
+            }
+            "find_best_link_concept" => {
+                let arg_parts = Self::split_sql_args(args);
+                let candidate = arg_parts.first().copied().unwrap_or("''");
+                let existing = arg_parts.get(1).copied().unwrap_or("''");
+                format!("(AI.GENERATE(CONCAT('Here is a new candidate concept: \"', {}, '\". Which of the following existing concepts is it most closely related to? The relationship could be as a sub-category, a similar idea, or a related domain. Respond with the single best-fit concept from the list, or \"none\" if it is genuinely new.\\n\\nExisting Concepts: ', {}, '\\n\\nReturn as JSON: {{\\\"best_link_concept\\\": \\\"The single best concept name OR none\\\"}}'))).result", candidate, existing)
+            }
+            "consolidate_facts" => {
+                let arg_parts = Self::split_sql_args(args);
+                let new_fact = arg_parts.first().copied().unwrap_or("''");
+                let existing_facts = arg_parts.get(1).copied().unwrap_or("''");
+                format!("(AI.GENERATE(CONCAT('A new fact has been learned: \"', {}, '\". Determine whether it duplicates or contradicts any of these existing facts. Return as JSON: {{\\\"action\\\": \\\"add|merge|replace|skip\\\", \\\"target_fact\\\": \\\"statement of existing fact or null\\\", \\\"final_statement\\\": \\\"merged statement or null\\\"}}.\\n\\nExisting Facts: ', {}))).result", new_fact, existing_facts)
+            }
+            "prune_fact_subset" => {
+                format!("(AI.GENERATE(CONCAT('From the following list of facts, select the most informative subset that preserves the core meaning without redundancy. Return as JSON: {{\\\"kept_facts\\\": [\\\"fact statement\\\"]}}.\\n\\nFacts: ', {}))).result", args)
+            }
             _ => {
                 format!("(AI.GENERATE({})).result", args)
             }
@@ -334,7 +409,7 @@ impl Compiler {
 
     /// Replace {{ ref('model_name') }} with the resolved table name.
     fn translate_databricks(&self, func_name: &str, args: &str) -> String {
-        let arg_parts: Vec<&str> = args.split(',').map(|a| a.trim()).collect();
+        let arg_parts = Self::split_sql_args(args);
         match func_name {
             "generate_text" => {
                 let col = arg_parts.first().copied().unwrap_or("''");

@@ -67,6 +67,15 @@ pub const NQL_FUNCTIONS: &[&str] = &[
     "synthesize",
     "breathe",
     "zoom_in",
+    "abstract",
+    "generate_groups",
+    "remove_redundant_groups",
+    "assign_groups_to_fact",
+    "get_related_concepts_multi",
+    "get_related_facts_llm",
+    "find_best_link_concept",
+    "consolidate_facts",
+    "prune_fact_subset",
 ];
 
 /// Parse a .sql model file from a path.
