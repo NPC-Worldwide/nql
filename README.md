@@ -6,22 +6,20 @@
 
 ## Install
 
-### Homebrew
-
-```
-brew install npc-worldwide/tap/nql
-```
-
 ### Cargo
 
 ```
 cargo install nql
 ```
 
-### pip
+### Pre-built binaries
+
+Download the latest release from [GitHub releases](https://github.com/npc-worldwide/nql/releases).
+
+### Homebrew (planned)
 
 ```
-pip install nql
+brew install npc-worldwide/tap/nql
 ```
 
 ## Use

@@ -58,7 +58,7 @@ fn main() {
             models_dir,
             target,
         } => {
-            let target = match Target::from_str(&target) {
+            let target = match target.parse::<Target>() {
                 Ok(t) => t,
                 Err(e) => {
                     eprintln!("Error: {}", e);
@@ -85,17 +85,15 @@ fn main() {
             );
 
             match model_name {
-                Some(name) => {
-                    match runner.run_single(&name, db.as_deref()) {
-                        Ok(sql) => {
-                            println!("{}", sql);
-                        }
-                        Err(e) => {
-                            eprintln!("Error running model '{}': {}", name, e);
-                            process::exit(1);
-                        }
+                Some(name) => match runner.run_single(&name, db.as_deref()) {
+                    Ok(sql) => {
+                        println!("{}", sql);
                     }
-                }
+                    Err(e) => {
+                        eprintln!("Error running model '{}': {}", name, e);
+                        process::exit(1);
+                    }
+                },
                 None => {
                     if target == Target::Sqlite {
                         let db_path = db.as_deref().unwrap_or(":memory:");
@@ -104,6 +102,12 @@ fn main() {
                             process::exit(1);
                         }
                         eprintln!("[nql] All models executed successfully.");
+                    } else if target == Target::Bigquery {
+                        if let Err(e) = runner.execute_bigquery() {
+                            eprintln!("Error executing models on BigQuery: {}", e);
+                            process::exit(1);
+                        }
+                        eprintln!("[nql] All models executed successfully on BigQuery.");
                     } else {
                         match runner.compile_all() {
                             Ok(results) => {
@@ -128,7 +132,7 @@ fn main() {
             models_dir,
             target,
         } => {
-            let target = match Target::from_str(&target) {
+            let target = match target.parse::<Target>() {
                 Ok(t) => t,
                 Err(e) => {
                     eprintln!("Error: {}", e);
@@ -149,30 +153,26 @@ fn main() {
             }
 
             match model_name {
-                Some(name) => {
-                    match runner.run_single(&name, None) {
-                        Ok(sql) => println!("{}", sql),
-                        Err(e) => {
-                            eprintln!("Error compiling model '{}': {}", name, e);
-                            process::exit(1);
+                Some(name) => match runner.run_single(&name, None) {
+                    Ok(sql) => println!("{}", sql),
+                    Err(e) => {
+                        eprintln!("Error compiling model '{}': {}", name, e);
+                        process::exit(1);
+                    }
+                },
+                None => match runner.compile_all() {
+                    Ok(results) => {
+                        for (name, sql) in results {
+                            println!("-- ═══ Model: {} ═══", name);
+                            println!("{}", sql);
+                            println!();
                         }
                     }
-                }
-                None => {
-                    match runner.compile_all() {
-                        Ok(results) => {
-                            for (name, sql) in results {
-                                println!("-- ═══ Model: {} ═══", name);
-                                println!("{}", sql);
-                                println!();
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Error compiling models: {}", e);
-                            process::exit(1);
-                        }
+                    Err(e) => {
+                        eprintln!("Error compiling models: {}", e);
+                        process::exit(1);
                     }
-                }
+                },
             }
         }
     }

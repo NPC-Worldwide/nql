@@ -1,6 +1,6 @@
 [package]
 name = "nql"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["NPC Worldwide <info@npcworldwi.de>"]
 description = "NQL — SQL compiler with AI function calls targeting multiple databases"
@@ -25,3 +25,6 @@ serde_yaml = "0.9"
 reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }
 clap = { version = "4", features = ["derive"] }
 thiserror = "1"
+
+[dev-dependencies]
+tempfile = "3"

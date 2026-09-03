@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::parser::{NqlCall, NqlModel};
+use crate::parser::NqlModel;
 use regex::Regex;
 
 /// Supported compilation targets.
@@ -13,8 +13,10 @@ pub enum Target {
     Databricks,
 }
 
-impl Target {
-    pub fn from_str(s: &str) -> Result<Self, String> {
+impl std::str::FromStr for Target {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "sqlite" => Ok(Target::Sqlite),
             "postgresql" | "postgres" | "pg" => Ok(Target::Postgresql),
@@ -52,7 +54,8 @@ impl Compiler {
 
     /// Register a ref mapping: model_name -> fully qualified table name.
     pub fn register_ref(&mut self, model_name: &str, table_name: &str) {
-        self.ref_map.insert(model_name.to_string(), table_name.to_string());
+        self.ref_map
+            .insert(model_name.to_string(), table_name.to_string());
     }
 
     /// Compile a raw SQL string (with nql.* calls and {{ ref() }}) to target SQL.
@@ -76,25 +79,37 @@ impl Compiler {
         let target_name = self.resolve_model_name(model);
         match model.config.materialized.as_str() {
             "table" => {
-                sql = format!(
-                    "CREATE TABLE IF NOT EXISTS {} AS\n{}",
-                    target_name, sql
-                );
+                sql = format!("CREATE TABLE IF NOT EXISTS {} AS\n{}", target_name, sql);
             }
             "view" => {
-                sql = format!(
-                    "CREATE OR REPLACE VIEW {} AS\n{}",
-                    target_name, sql
-                );
+                sql = format!("CREATE OR REPLACE VIEW {} AS\n{}", target_name, sql);
+            }
+            "incremental" => {
+                match model
+                    .config
+                    .extra
+                    .get("unique_key")
+                    .and_then(|v| v.as_str())
+                {
+                    Some(key) => {
+                        sql = format!(
+                            "CREATE TABLE IF NOT EXISTS {} AS\n(SELECT * FROM (\n{}\n) WHERE FALSE);\nINSERT INTO {}\nSELECT s.* FROM (\n{}\n) s\nWHERE NOT EXISTS (SELECT 1 FROM {} t WHERE t.{} = s.{});",
+                            target_name, sql, target_name, sql, target_name, key, key
+                        );
+                    }
+                    None => {
+                        sql = format!(
+                            "-- incremental materialization requires unique_key in config\nCREATE TABLE IF NOT EXISTS {} AS\n{}",
+                            target_name, sql
+                        );
+                    }
+                }
             }
             "ephemeral" => {
                 // No wrapping; used as CTE in downstream models
             }
             other => {
-                sql = format!(
-                    "-- Unknown materialization: {}\n{}",
-                    other, sql
-                );
+                sql = format!("-- Unknown materialization: {}\n{}", other, sql);
             }
         }
 
@@ -122,15 +137,17 @@ impl Compiler {
 
         let prefixed = format!(r"nql\.({})\(", funcs);
         let re_strip = Regex::new(&prefixed).expect("Invalid NQL prefix regex");
-        let stripped = re_strip.replace_all(sql, |caps: &regex::Captures| {
-            format!("{}(", &caps[1])
-        }).to_string();
+        let stripped = re_strip
+            .replace_all(sql, |caps: &regex::Captures| format!("{}(", &caps[1]))
+            .to_string();
 
         let bare = format!(r"\b({})\(([^)]*)\)", funcs);
         let re_bare = Regex::new(&bare).expect("Invalid bare NQL regex");
-        re_bare.replace_all(&stripped, |caps: &regex::Captures| {
-            self.translate_function(&caps[1], &caps[2], target)
-        }).to_string()
+        re_bare
+            .replace_all(&stripped, |caps: &regex::Captures| {
+                self.translate_function(&caps[1], &caps[2], target)
+            })
+            .to_string()
     }
 
     /// Translate a single nql.* function call to target SQL.
@@ -158,11 +175,12 @@ impl Compiler {
         match func_name {
             "generate_text" => {
                 let col = arg_parts.first().copied().unwrap_or("''");
-                let prompt = if arg_parts.len() > 1 { arg_parts[1] } else { "''" };
-                format!(
-                    "pgai.generate_text(prompt => {}, text => {})",
-                    prompt, col
-                )
+                let prompt = if arg_parts.len() > 1 {
+                    arg_parts[1]
+                } else {
+                    "''"
+                };
+                format!("pgai.generate_text(prompt => {}, text => {})", prompt, col)
             }
             "summarize" => {
                 let col = arg_parts.first().copied().unwrap_or("''");
@@ -174,7 +192,11 @@ impl Compiler {
             }
             "translate" => {
                 let col = arg_parts.first().copied().unwrap_or("''");
-                let lang = if arg_parts.len() > 1 { arg_parts[1] } else { "'en'" };
+                let lang = if arg_parts.len() > 1 {
+                    arg_parts[1]
+                } else {
+                    "'en'"
+                };
                 format!(
                     "pgai.translate(text => {}, target_language => {})",
                     col, lang
@@ -202,63 +224,110 @@ impl Compiler {
             "translate" => {
                 let arg_parts: Vec<&str> = args.split(',').map(|a| a.trim()).collect();
                 let col = arg_parts.first().copied().unwrap_or("''");
-                let lang = if arg_parts.len() > 1 { arg_parts[1] } else { "'en'" };
+                let lang = if arg_parts.len() > 1 {
+                    arg_parts[1]
+                } else {
+                    "'en'"
+                };
                 format!("SNOWFLAKE.CORTEX.TRANSLATE({}, {}, 'en')", col, lang)
             }
-            "extract_entities" => format!("SNOWFLAKE.CORTEX.EXTRACT_ANSWER({}, 'Extract all entities')", args),
-            "generate_embedding" => format!("SNOWFLAKE.CORTEX.EMBED_TEXT_768('snowflake-arctic-embed-m-v1.5', {})", args),
+            "extract_entities" => format!(
+                "SNOWFLAKE.CORTEX.EXTRACT_ANSWER({}, 'Extract all entities')",
+                args
+            ),
+            "generate_embedding" => format!(
+                "SNOWFLAKE.CORTEX.EMBED_TEXT_768('snowflake-arctic-embed-m-v1.5', {})",
+                args
+            ),
             _ => format!("SNOWFLAKE.CORTEX.COMPLETE('llama3.1-8b', {})", args),
         }
     }
 
-    // ── BigQuery: ML functions ─────────────────────────────────────────
+    // ── BigQuery: built-in AI functions ────────────────────────────────
 
     fn translate_bigquery(&self, func_name: &str, args: &str) -> String {
         match func_name {
             "generate_text" => {
-                format!(
-                    "ML.GENERATE_TEXT(MODEL `nql_model`, (SELECT {} AS prompt), STRUCT(256 AS max_output_tokens))",
-                    args
-                )
+                format!("(AI.GENERATE({})).result", args)
             }
             "summarize" => {
-                format!(
-                    "ML.GENERATE_TEXT(MODEL `nql_model`, (SELECT CONCAT('Summarize: ', {}) AS prompt), STRUCT(512 AS max_output_tokens))",
-                    args
-                )
+                format!("(AI.GENERATE(CONCAT('Summarize: ', {}))).result", args)
             }
             "analyze_sentiment" => {
                 format!(
-                    "ML.GENERATE_TEXT(MODEL `nql_model`, (SELECT CONCAT('Analyze sentiment: ', {}) AS prompt), STRUCT(64 AS max_output_tokens))",
+                    "(AI.GENERATE(CONCAT('Analyze sentiment: ', {}))).result",
                     args
                 )
             }
             "translate" => {
                 let arg_parts: Vec<&str> = args.split(',').map(|a| a.trim()).collect();
                 let col = arg_parts.first().copied().unwrap_or("''");
-                let lang = if arg_parts.len() > 1 { arg_parts[1] } else { "'en'" };
+                let lang = if arg_parts.len() > 1 {
+                    arg_parts[1]
+                } else {
+                    "'en'"
+                };
                 format!(
-                    "ML.GENERATE_TEXT(MODEL `nql_model`, (SELECT CONCAT('Translate to ', {}, ': ', {}) AS prompt), STRUCT(512 AS max_output_tokens))",
+                    "(AI.GENERATE(CONCAT('Translate to ', {}, ': ', {}))).result",
                     lang, col
                 )
             }
             "extract_entities" => {
                 format!(
-                    "ML.GENERATE_TEXT(MODEL `nql_model`, (SELECT CONCAT('Extract entities from: ', {}) AS prompt), STRUCT(256 AS max_output_tokens))",
+                    "(AI.GENERATE(CONCAT('Extract entities from: ', {}))).result",
                     args
                 )
             }
             "generate_embedding" => {
-                format!(
-                    "ML.GENERATE_TEXT_EMBEDDING(MODEL `nql_embedding_model`, (SELECT {} AS content), STRUCT(TRUE AS flatten_json_output))",
-                    args
-                )
+                format!("(AI.GENERATE_EMBEDDING({})).result", args)
+            }
+            "sentiment" => {
+                format!("(AI.GENERATE(CONCAT('Analyze the sentiment of the following text. Respond with exactly one word: positive, negative, or neutral.\\n\\n', {}))).result", args)
+            }
+            "get_facts" => {
+                format!("(AI.GENERATE(CONCAT('Extract facts from this text. A fact is a specific statement that can be sourced from the text. Return as JSON array of objects with \"statement\", \"source_text\", and \"type\" (explicit or inferred) fields.\\n\\nText: ', {}))).result", args)
+            }
+            "identify_groups" => {
+                format!("(AI.GENERATE(CONCAT('What are the main groups these items could be organized into? Return as JSON array of group names.\\n\\nItems: ', {}))).result", args)
+            }
+            "classify" => {
+                format!("(AI.GENERATE(CONCAT('Classify the following text into a category. Return only the category name.\\n\\n', {}))).result", args)
+            }
+            "classify_into" => {
+                let arg_parts: Vec<&str> = args.split(',').map(|a| a.trim()).collect();
+                let col = arg_parts.first().copied().unwrap_or("''");
+                let categories = arg_parts.get(1).copied().unwrap_or("''");
+                format!("(AI.GENERATE(CONCAT('Classify the following text into one of these categories: ', {}, '. Return only the category name.\\n\\n', {}))).result", categories, col)
+            }
+            "extract_json" => {
+                format!("(AI.GENERATE(CONCAT('Extract structured data from this text and return as valid JSON:\\n\\n', {}))).result", args)
+            }
+            "detect_language" => {
+                format!("(AI.GENERATE(CONCAT('Detect the language of this text. Return only the ISO 639-1 language code.\\n\\n', {}))).result", args)
+            }
+            "answer_question" => {
+                let arg_parts: Vec<&str> = args.split(',').map(|a| a.trim()).collect();
+                let context = arg_parts.first().copied().unwrap_or("''");
+                let question = arg_parts.get(1).copied().unwrap_or("''");
+                format!("(AI.GENERATE(CONCAT('Based on the following context, answer the question.\\n\\nContext: ', {}, '\\n\\nQuestion: ', {}))).result", context, question)
+            }
+            "generate_code" => {
+                format!("(AI.GENERATE(CONCAT('Generate code for the following task. Return only the code, no explanation.\\n\\n', {}))).result", args)
+            }
+            "criticize" => {
+                format!("(AI.GENERATE(CONCAT('Provide a critical analysis and constructive criticism of the following, focused on weaknesses, improvements, and alternatives:\\n\\n', {}))).result", args)
+            }
+            "synthesize" => {
+                format!("(AI.GENERATE(CONCAT('Synthesize this content into a clear, concise summary that captures the essence:\\n\\n', {}))).result", args)
+            }
+            "breathe" => {
+                format!("(AI.GENERATE(CONCAT('Read the following and identify the high level objective, most recent task, accomplishments, and failures. Return as JSON with keys: high_level_objective, most_recent_task, accomplishments, failures.\\n\\n', {}))).result", args)
+            }
+            "zoom_in" => {
+                format!("(AI.GENERATE(CONCAT('Look at these facts and infer new implied facts. Return as JSON array of objects with \"statement\" and \"inferred_from\" fields.\\n\\n', {}))).result", args)
             }
             _ => {
-                format!(
-                    "ML.GENERATE_TEXT(MODEL `nql_model`, (SELECT {} AS prompt), STRUCT(256 AS max_output_tokens))",
-                    args
-                )
+                format!("(AI.GENERATE({})).result", args)
             }
         }
     }
@@ -269,12 +338,22 @@ impl Compiler {
         match func_name {
             "generate_text" => {
                 let col = arg_parts.first().copied().unwrap_or("''");
-                let prompt = if arg_parts.len() > 1 { arg_parts[1] } else { "''" };
-                format!("ai_query('databricks-meta-llama-3-1-70b-instruct', CONCAT({}, ' ', {}))", prompt, col)
+                let prompt = if arg_parts.len() > 1 {
+                    arg_parts[1]
+                } else {
+                    "''"
+                };
+                format!(
+                    "ai_query('databricks-meta-llama-3-1-70b-instruct', CONCAT({}, ' ', {}))",
+                    prompt, col
+                )
             }
             "summarize" => {
                 let col = arg_parts.first().copied().unwrap_or("''");
-                format!("ai_query('databricks-meta-llama-3-1-70b-instruct', CONCAT('Summarize: ', {}))", col)
+                format!(
+                    "ai_query('databricks-meta-llama-3-1-70b-instruct', CONCAT('Summarize: ', {}))",
+                    col
+                )
             }
             "analyze_sentiment" => {
                 let col = arg_parts.first().copied().unwrap_or("''");
@@ -282,7 +361,11 @@ impl Compiler {
             }
             "translate" => {
                 let col = arg_parts.first().copied().unwrap_or("''");
-                let lang = if arg_parts.len() > 1 { arg_parts[1] } else { "'en'" };
+                let lang = if arg_parts.len() > 1 {
+                    arg_parts[1]
+                } else {
+                    "'en'"
+                };
                 format!("ai_query('databricks-meta-llama-3-1-70b-instruct', CONCAT('Translate to ', {}, ': ', {}))", lang, col)
             }
             "extract_entities" => {
@@ -293,7 +376,10 @@ impl Compiler {
                 let col = arg_parts.first().copied().unwrap_or("''");
                 format!("ai_query('databricks-bge-large-en', {})", col)
             }
-            _ => format!("ai_query('databricks-meta-llama-3-1-70b-instruct', {})", args),
+            _ => format!(
+                "ai_query('databricks-meta-llama-3-1-70b-instruct', {})",
+                args
+            ),
         }
     }
 
