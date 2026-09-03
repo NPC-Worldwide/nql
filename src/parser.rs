@@ -54,6 +54,19 @@ pub const NQL_FUNCTIONS: &[&str] = &[
     "translate",
     "extract_entities",
     "generate_embedding",
+    "sentiment",
+    "get_facts",
+    "identify_groups",
+    "classify",
+    "classify_into",
+    "extract_json",
+    "detect_language",
+    "answer_question",
+    "generate_code",
+    "criticize",
+    "synthesize",
+    "breathe",
+    "zoom_in",
 ];
 
 /// Parse a .sql model file from a path.
@@ -107,8 +120,7 @@ fn extract_frontmatter(content: &str) -> Result<ModelConfig, String> {
         }
 
         if in_config {
-            if trimmed.starts_with("--") {
-                let after_dashes = &trimmed[2..];
+            if let Some(after_dashes) = trimmed.strip_prefix("--") {
                 // Check if this is still an indented config line
                 if after_dashes.starts_with("  ") || after_dashes.starts_with('\t') {
                     yaml_lines.push(after_dashes.to_string());
@@ -161,8 +173,7 @@ fn strip_frontmatter(content: &str) -> String {
             }
 
             if in_config {
-                if trimmed.starts_with("--") {
-                    let after = &trimmed[2..];
+                if let Some(after) = trimmed.strip_prefix("--") {
                     if after.starts_with("  ") || after.starts_with('\t') {
                         continue;
                     }
@@ -218,7 +229,7 @@ pub fn extract_nql_calls(sql: &str) -> Vec<NqlCall> {
 
     for cap in re_bare.captures_iter(sql) {
         let full = cap[0].to_string();
-        let prefixed_form = format!("nql.{}", &full);
+        let prefixed_form = format!("nql.{}", full);
         if !seen.contains(&prefixed_form) && seen.insert(full.clone()) {
             calls.push(NqlCall {
                 full_match: full,
@@ -233,8 +244,8 @@ pub fn extract_nql_calls(sql: &str) -> Vec<NqlCall> {
 
 /// Extract all {{ ref('...') }} references from SQL text.
 pub fn extract_refs(sql: &str) -> Vec<String> {
-    let re = Regex::new(r#"\{\{\s*ref\(\s*['"]([^'"]+)['"]\s*\)\s*\}\}"#)
-        .expect("Invalid ref regex");
+    let re =
+        Regex::new(r#"\{\{\s*ref\(\s*['"]([^'"]+)['"]\s*\)\s*\}\}"#).expect("Invalid ref regex");
 
     re.captures_iter(sql)
         .map(|cap| cap[1].to_string())

@@ -27,13 +27,15 @@ impl Default for LlmConfig {
 impl LlmConfig {
     pub fn from_env() -> Self {
         let backend = std::env::var("NQL_LLM_BACKEND").unwrap_or_else(|_| "ollama".to_string());
-        let api_key = std::env::var("OPENAI_API_KEY").ok()
+        let api_key = std::env::var("OPENAI_API_KEY")
+            .ok()
             .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
             .or_else(|| std::env::var("GEMINI_API_KEY").ok());
 
         let (api_url, model) = match backend.as_str() {
             "openai" => (
-                std::env::var("NQL_API_URL").unwrap_or_else(|_| "https://api.openai.com/v1/chat/completions".to_string()),
+                std::env::var("NQL_API_URL")
+                    .unwrap_or_else(|_| "https://api.openai.com/v1/chat/completions".to_string()),
                 std::env::var("NQL_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string()),
             ),
             _ => (
@@ -42,7 +44,12 @@ impl LlmConfig {
             ),
         };
 
-        LlmConfig { backend, api_url, model, api_key }
+        LlmConfig {
+            backend,
+            api_url,
+            model,
+            api_key,
+        }
     }
 }
 
@@ -54,46 +61,93 @@ fn call_llm(config: &LlmConfig, prompt: &str) -> Result<String, String> {
     }
 }
 
-fn call_ollama(client: &reqwest::blocking::Client, config: &LlmConfig, prompt: &str) -> Result<String, String> {
+fn call_ollama(
+    client: &reqwest::blocking::Client,
+    config: &LlmConfig,
+    prompt: &str,
+) -> Result<String, String> {
     let body = serde_json::json!({"model": config.model, "prompt": prompt, "stream": false});
-    let resp = client.post(&config.api_url).json(&body).send().map_err(|e| format!("Ollama: {}", e))?;
+    let resp = client
+        .post(&config.api_url)
+        .json(&body)
+        .send()
+        .map_err(|e| format!("Ollama: {}", e))?;
     let json: serde_json::Value = resp.json().map_err(|e| format!("Parse: {}", e))?;
-    json["response"].as_str().map(|s| s.trim().to_string()).ok_or_else(|| "No response".to_string())
+    json["response"]
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .ok_or_else(|| "No response".to_string())
 }
 
-fn call_openai(client: &reqwest::blocking::Client, config: &LlmConfig, prompt: &str) -> Result<String, String> {
+fn call_openai(
+    client: &reqwest::blocking::Client,
+    config: &LlmConfig,
+    prompt: &str,
+) -> Result<String, String> {
     let api_key = config.api_key.as_deref().ok_or("API key not set")?;
     let body = serde_json::json!({"model": config.model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 512});
-    let resp = client.post(&config.api_url).header("Authorization", format!("Bearer {}", api_key)).json(&body).send().map_err(|e| format!("OpenAI: {}", e))?;
+    let resp = client
+        .post(&config.api_url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .json(&body)
+        .send()
+        .map_err(|e| format!("OpenAI: {}", e))?;
     let json: serde_json::Value = resp.json().map_err(|e| format!("Parse: {}", e))?;
-    json["choices"][0]["message"]["content"].as_str().map(|s| s.trim().to_string()).ok_or_else(|| "No content".to_string())
+    json["choices"][0]["message"]["content"]
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .ok_or_else(|| "No content".to_string())
 }
 
-fn register_udf<F>(conn: &Connection, name: &str, config: &LlmConfig, prompt_builder: F) -> rusqlite::Result<()>
-where F: Fn(&str) -> String + Send + 'static {
+fn register_udf<F>(
+    conn: &Connection,
+    name: &str,
+    config: &LlmConfig,
+    prompt_builder: F,
+) -> rusqlite::Result<()>
+where
+    F: Fn(&str) -> String + Send + 'static,
+{
     let cfg = config.clone();
-    conn.create_scalar_function(name, 1, FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC, move |ctx| {
-        let input: String = ctx.get(0)?;
-        let prompt = prompt_builder(&input);
-        match call_llm(&cfg, &prompt) {
-            Ok(result) => Ok(ToSqlOutput::Owned(Value::Text(result))),
-            Err(e) => Ok(ToSqlOutput::Owned(Value::Text(format!("ERROR: {}", e)))),
-        }
-    })
+    conn.create_scalar_function(
+        name,
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        move |ctx| {
+            let input: String = ctx.get(0)?;
+            let prompt = prompt_builder(&input);
+            match call_llm(&cfg, &prompt) {
+                Ok(result) => Ok(ToSqlOutput::Owned(Value::Text(result))),
+                Err(e) => Ok(ToSqlOutput::Owned(Value::Text(format!("ERROR: {}", e)))),
+            }
+        },
+    )
 }
 
-fn register_udf2<F>(conn: &Connection, name: &str, config: &LlmConfig, prompt_builder: F) -> rusqlite::Result<()>
-where F: Fn(&str, &str) -> String + Send + 'static {
+fn register_udf2<F>(
+    conn: &Connection,
+    name: &str,
+    config: &LlmConfig,
+    prompt_builder: F,
+) -> rusqlite::Result<()>
+where
+    F: Fn(&str, &str) -> String + Send + 'static,
+{
     let cfg = config.clone();
-    conn.create_scalar_function(name, 2, FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC, move |ctx| {
-        let input1: String = ctx.get(0)?;
-        let input2: String = ctx.get(1)?;
-        let prompt = prompt_builder(&input1, &input2);
-        match call_llm(&cfg, &prompt) {
-            Ok(result) => Ok(ToSqlOutput::Owned(Value::Text(result))),
-            Err(e) => Ok(ToSqlOutput::Owned(Value::Text(format!("ERROR: {}", e)))),
-        }
-    })
+    conn.create_scalar_function(
+        name,
+        2,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        move |ctx| {
+            let input1: String = ctx.get(0)?;
+            let input2: String = ctx.get(1)?;
+            let prompt = prompt_builder(&input1, &input2);
+            match call_llm(&cfg, &prompt) {
+                Ok(result) => Ok(ToSqlOutput::Owned(Value::Text(result))),
+                Err(e) => Ok(ToSqlOutput::Owned(Value::Text(format!("ERROR: {}", e)))),
+            }
+        },
+    )
 }
 
 pub fn register_all_functions(conn: &Connection) -> rusqlite::Result<()> {
@@ -115,9 +169,7 @@ pub fn register_all_functions(conn: &Connection) -> rusqlite::Result<()> {
         format!("Extract all named entities (people, places, organizations) from the following text. Return as JSON array.\n\n{}", text)
     })?;
 
-    register_udf(conn, "generate_text", &config, |prompt| {
-        prompt.to_string()
-    })?;
+    register_udf(conn, "generate_text", &config, |prompt| prompt.to_string())?;
 
     register_udf(conn, "generate_embedding", &config, |text| {
         format!("Generate a semantic embedding description for: {}", text)
@@ -137,7 +189,10 @@ pub fn register_all_functions(conn: &Connection) -> rusqlite::Result<()> {
     })?;
 
     register_udf(conn, "classify", &config, |text| {
-        format!("Classify the following text into a category. Return only the category name.\n\n{}", text)
+        format!(
+            "Classify the following text into a category. Return only the category name.\n\n{}",
+            text
+        )
     })?;
 
     register_udf2(conn, "classify_into", &config, |text, categories| {
@@ -145,19 +200,31 @@ pub fn register_all_functions(conn: &Connection) -> rusqlite::Result<()> {
     })?;
 
     register_udf(conn, "extract_json", &config, |text| {
-        format!("Extract structured data from this text and return as valid JSON:\n\n{}", text)
+        format!(
+            "Extract structured data from this text and return as valid JSON:\n\n{}",
+            text
+        )
     })?;
 
     register_udf(conn, "detect_language", &config, |text| {
-        format!("Detect the language of this text. Return only the ISO 639-1 language code.\n\n{}", text)
+        format!(
+            "Detect the language of this text. Return only the ISO 639-1 language code.\n\n{}",
+            text
+        )
     })?;
 
     register_udf2(conn, "answer_question", &config, |context, question| {
-        format!("Based on the following context, answer the question.\n\nContext: {}\n\nQuestion: {}", context, question)
+        format!(
+            "Based on the following context, answer the question.\n\nContext: {}\n\nQuestion: {}",
+            context, question
+        )
     })?;
 
     register_udf(conn, "generate_code", &config, |prompt| {
-        format!("Generate code for the following task. Return only the code, no explanation.\n\n{}", prompt)
+        format!(
+            "Generate code for the following task. Return only the code, no explanation.\n\n{}",
+            prompt
+        )
     })?;
 
     register_udf(conn, "criticize", &config, |text| {

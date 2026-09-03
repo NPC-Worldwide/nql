@@ -1,4 +1,4 @@
-pub mod parser;
 pub mod compiler;
-pub mod sqlite_udf;
+pub mod parser;
 pub mod runner;
+pub mod sqlite_udf;

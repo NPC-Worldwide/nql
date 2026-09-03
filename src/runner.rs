@@ -71,7 +71,13 @@ impl Runner {
 
         for name in &model_names {
             if !visited.contains(name) {
-                self.topo_sort(name, &model_names, &mut visited, &mut in_progress, &mut order)?;
+                self.topo_sort(
+                    name,
+                    &model_names,
+                    &mut visited,
+                    &mut in_progress,
+                    &mut order,
+                )?;
             }
         }
 
@@ -142,10 +148,57 @@ impl Runner {
                 let compiled_sql = compiler.compile_model(model);
                 eprintln!("[nql] Executing model: {}", model_name);
                 eprintln!("[nql] SQL:\n{}\n", compiled_sql);
-                conn.execute_batch(&compiled_sql)
-                    .map_err(|e| RunnerError::Compilation(format!(
-                        "Failed to execute model '{}': {}", model_name, e
-                    )))?;
+                conn.execute_batch(&compiled_sql).map_err(|e| {
+                    RunnerError::Compilation(format!(
+                        "Failed to execute model '{}': {}",
+                        model_name, e
+                    ))
+                })?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Compile all models and execute them against BigQuery via the `bq` CLI,
+    /// in dependency order.
+    pub fn execute_bigquery(&self) -> Result<(), RunnerError> {
+        let results = self.compile_all()?;
+
+        let mut bq_args: Vec<String> = vec![
+            "query".to_string(),
+            "--use_legacy_sql=false".to_string(),
+            "--format=none".to_string(),
+        ];
+        if let Ok(project) = std::env::var("NQL_BQ_PROJECT") {
+            bq_args.push(format!("--project_id={}", project));
+        }
+        if let Ok(location) = std::env::var("NQL_BQ_LOCATION") {
+            bq_args.push(format!("--location={}", location));
+        }
+
+        for (name, sql) in results {
+            eprintln!("[nql] Executing model on BigQuery: {}", name);
+            let mut child = std::process::Command::new("bq")
+                .args(&bq_args)
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .map_err(|e| RunnerError::Compilation(format!("Failed to spawn bq CLI: {}", e)))?;
+            if let Some(mut stdin) = child.stdin.take() {
+                use std::io::Write;
+                stdin.write_all(sql.as_bytes()).map_err(|e| {
+                    RunnerError::Compilation(format!("Failed to write SQL to bq stdin: {}", e))
+                })?;
+            }
+            let status = child
+                .wait_with_output()
+                .map_err(|e| RunnerError::Compilation(format!("Failed waiting for bq: {}", e)))?;
+            if !status.status.success() {
+                return Err(RunnerError::Compilation(format!(
+                    "bq query failed for model '{}': {}",
+                    name,
+                    String::from_utf8_lossy(&status.stderr)
+                )));
             }
         }
 
@@ -179,13 +232,18 @@ impl Runner {
     }
 
     /// Execute or compile a single named model.
-    pub fn run_single(&self, model_name: &str, db_path: Option<&str>) -> Result<String, RunnerError> {
-        let model = self.models.get(model_name).ok_or_else(|| {
-            RunnerError::Parse {
+    pub fn run_single(
+        &self,
+        model_name: &str,
+        db_path: Option<&str>,
+    ) -> Result<String, RunnerError> {
+        let model = self
+            .models
+            .get(model_name)
+            .ok_or_else(|| RunnerError::Parse {
                 model: model_name.to_string(),
                 message: "Model not found".to_string(),
-            }
-        })?;
+            })?;
 
         let mut compiler = Compiler::new(self.target);
 
@@ -210,10 +268,12 @@ impl Runner {
                     rusqlite::Connection::open(path)?
                 };
                 sqlite_udf::register_nql_functions(&conn)?;
-                conn.execute_batch(&compiled)
-                    .map_err(|e| RunnerError::Compilation(format!(
-                        "Failed to execute model '{}': {}", model_name, e
-                    )))?;
+                conn.execute_batch(&compiled).map_err(|e| {
+                    RunnerError::Compilation(format!(
+                        "Failed to execute model '{}': {}",
+                        model_name, e
+                    ))
+                })?;
             }
         }
 
@@ -267,8 +327,16 @@ mod tests {
         runner.resolve_dependencies().unwrap();
 
         // A should come before B
-        let a_pos = runner.execution_order.iter().position(|n| n == "a").unwrap();
-        let b_pos = runner.execution_order.iter().position(|n| n == "b").unwrap();
+        let a_pos = runner
+            .execution_order
+            .iter()
+            .position(|n| n == "a")
+            .unwrap();
+        let b_pos = runner
+            .execution_order
+            .iter()
+            .position(|n| n == "b")
+            .unwrap();
         assert!(a_pos < b_pos);
 
         let _ = fs::remove_dir_all(&tmp);
