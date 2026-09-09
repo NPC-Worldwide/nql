@@ -278,6 +278,11 @@ impl Compiler {
     // ── BigQuery: built-in AI functions ────────────────────────────────
 
     fn translate_bigquery(&self, func_name: &str, args: &str) -> String {
+        // Suffix appended to BigQuery prompts that request JSON output. Copied from
+        // npcpy/gen/response.py so NQL-generated AI.GENERATE prompts behave the same as
+        // get_llm_response(..., format="json").
+        const BQ_JSON_FORMAT_SUFFIX: &str = " If you are returning a json object, begin directly with the opening {. If you are returning a json array, begin directly with the opening [. Do not include any additional markdown formatting or leading ```json tags in your response. The item keys should be based on the ones provided by the user. Do not invent new ones.";
+
         match func_name {
             "generate_text" => {
                 format!("(AI.GENERATE({})).result", args)
@@ -317,10 +322,10 @@ impl Compiler {
                 format!("(AI.GENERATE(CONCAT('Analyze the sentiment of the following text. Respond with exactly one word: positive, negative, or neutral.\\n\\n', {}))).result", args)
             }
             "get_facts" => {
-                format!("(AI.GENERATE(CONCAT('Extract facts from this text. A fact is a specific statement that can be sourced from the text. Return as JSON array of objects with \"statement\", \"source_text\", and \"type\" (explicit or inferred) fields.\\n\\nText: ', {}))).result", args)
+                format!("(AI.GENERATE(CONCAT('Extract facts from this text. A fact is a specific statement that can be sourced from the text. Return as JSON array of objects with \"statement\", \"source_text\", and \"type\" (explicit or inferred) fields.{}\\n\\nText: ', {}))).result", BQ_JSON_FORMAT_SUFFIX, args)
             }
             "identify_groups" => {
-                format!("(AI.GENERATE(CONCAT('What are the main groups these items could be organized into? Return as JSON array of group names.\\n\\nItems: ', {}))).result", args)
+                format!("(AI.GENERATE(CONCAT('What are the main groups these items could be organized into? Return as JSON array of group names.{}\\n\\nItems: ', {}))).result", BQ_JSON_FORMAT_SUFFIX, args)
             }
             "classify" => {
                 format!("(AI.GENERATE(CONCAT('Classify the following text into a category. Return only the category name.\\n\\n', {}))).result", args)
@@ -332,7 +337,7 @@ impl Compiler {
                 format!("(AI.GENERATE(CONCAT('Classify the following text into one of these categories: ', {}, '. Return only the category name.\\n\\n', {}))).result", categories, col)
             }
             "extract_json" => {
-                format!("(AI.GENERATE(CONCAT('Extract structured data from this text and return as valid JSON:\\n\\n', {}))).result", args)
+                format!("(AI.GENERATE(CONCAT('Extract structured data from this text and return as valid JSON.{}\\n\\n', {}))).result", BQ_JSON_FORMAT_SUFFIX, args)
             }
             "detect_language" => {
                 format!("(AI.GENERATE(CONCAT('Detect the language of this text. Return only the ISO 639-1 language code.\\n\\n', {}))).result", args)
@@ -353,53 +358,53 @@ impl Compiler {
                 format!("(AI.GENERATE(CONCAT('Synthesize this content into a clear, concise summary that captures the essence:\\n\\n', {}))).result", args)
             }
             "breathe" => {
-                format!("(AI.GENERATE(CONCAT('Read the following and identify the high level objective, most recent task, accomplishments, and failures. Return as JSON with keys: high_level_objective, most_recent_task, accomplishments, failures.\\n\\n', {}))).result", args)
+                format!("(AI.GENERATE(CONCAT('Read the following and identify the high level objective, most recent task, accomplishments, and failures. Return as JSON with keys: high_level_objective, most_recent_task, accomplishments, failures.{}\\n\\n', {}))).result", BQ_JSON_FORMAT_SUFFIX, args)
             }
             "zoom_in" => {
-                format!("(AI.GENERATE(CONCAT('Look at these facts and infer new implied facts. Return as JSON array of objects with \"statement\" and \"inferred_from\" fields.\\n\\n', {}))).result", args)
+                format!("(AI.GENERATE(CONCAT('Look at these facts and infer new implied facts. Return as JSON array of objects with \"statement\" and \"inferred_from\" fields.{}\\n\\n', {}))).result", BQ_JSON_FORMAT_SUFFIX, args)
             }
             "abstract" => {
-                format!("(AI.GENERATE(CONCAT('Create more abstract categories from this list of groups. Group names should never be more than two words, should not contain gerunds, and should never contain conjunctions like AND or OR. Generate no more than 5 new concepts and no fewer than 2. Return as JSON: {{\\\"groups\\\": [{{\\\"name\\\": \\\"abstract category name\\\"}}]}}.\\n\\nGroups: ', {}))).result", args)
+                format!("(AI.GENERATE(CONCAT('Create more abstract categories from this list of groups. Group names should never be more than two words, should not contain gerunds, and should never contain conjunctions like AND or OR. Generate no more than 5 new concepts and no fewer than 2. Return as JSON: {{\\\"groups\\\": [{{\\\"name\\\": \\\"abstract category name\\\"}}]}}.{}\\n\\nGroups: ', {}))).result", BQ_JSON_FORMAT_SUFFIX, args)
             }
             "generate_groups" => {
-                format!("(AI.GENERATE(CONCAT('Generate conceptual groups for these facts. Group names should never be more than two words, should not contain gerunds, and should never contain conjunctions like AND or OR. Return as JSON: {{\\\"groups\\\": [{{\\\"name\\\": \\\"group name\\\"}}]}}.\\n\\nFacts: ', {}))).result", args)
+                format!("(AI.GENERATE(CONCAT('Generate conceptual groups for these facts. Group names should never be more than two words, should not contain gerunds, and should never contain conjunctions like AND or OR. Return as JSON: {{\\\"groups\\\": [{{\\\"name\\\": \\\"group name\\\"}}]}}.{}\\n\\nFacts: ', {}))).result", BQ_JSON_FORMAT_SUFFIX, args)
             }
             "remove_redundant_groups" => {
-                format!("(AI.GENERATE(CONCAT('Remove redundant groups from this list. Merge similar groups and keep only distinct concepts. Group names should never be more than two words, should not contain gerunds, and should never contain conjunctions like AND or OR. Return as JSON: {{\\\"groups\\\": [{{\\\"name\\\": \\\"final group name\\\"}}]}}.\\n\\nGroups: ', {}))).result", args)
+                format!("(AI.GENERATE(CONCAT('Remove redundant groups from this list. Merge similar groups and keep only distinct concepts. Group names should never be more than two words, should not contain gerunds, and should never contain conjunctions like AND or OR. Return as JSON: {{\\\"groups\\\": [{{\\\"name\\\": \\\"final group name\\\"}}]}}.{}\\n\\nGroups: ', {}))).result", BQ_JSON_FORMAT_SUFFIX, args)
             }
             "assign_groups_to_fact" => {
                 let arg_parts = Self::split_sql_args(args);
                 let fact = arg_parts.first().copied().unwrap_or("''");
                 let groups = arg_parts.get(1).copied().unwrap_or("''");
-                format!("(AI.GENERATE(CONCAT('Given this fact, assign it to any relevant groups. Return as JSON: {{\\\"groups\\\": [\\\"list of group names\\\"]}}.\\n\\nFact: ', {}, '\\n\\nGroups: ', {}))).result", fact, groups)
+                format!("(AI.GENERATE(CONCAT('Given this fact, assign it to any relevant groups. Return as JSON: {{\\\"groups\\\": [\\\"list of group names\\\"]}}.{}\\n\\nFact: ', {}, '\\n\\nGroups: ', {}))).result", BQ_JSON_FORMAT_SUFFIX, fact, groups)
             }
             "get_related_concepts_multi" => {
                 let arg_parts = Self::split_sql_args(args);
                 let node_name = arg_parts.first().copied().unwrap_or("''");
                 let node_type = arg_parts.get(1).copied().unwrap_or("'fact'");
                 let concepts = arg_parts.get(2).copied().unwrap_or("''");
-                format!("(AI.GENERATE(CONCAT('Which of the following concepts relate to the given ', {}, '? Select all that apply from most specific to most abstract. ', INITCAP({}), ': \"', {}, '\"\\n\\nAvailable Concepts: ', {}, '\\n\\nReturn as JSON: {{\\\"related_concepts\\\": [\\\"Concept A\\\", \\\"Concept B\\\"]}}'))).result", node_type, node_type, node_name, concepts)
+                format!("(AI.GENERATE(CONCAT('Which of the following concepts relate to the given ', {}, '? Select all that apply from most specific to most abstract. ', INITCAP({}), ': \"', {}, '\"\\n\\nAvailable Concepts: ', {}, '\\n\\nReturn as JSON: {{\\\"related_concepts\\\": [\\\"Concept A\\\", \\\"Concept B\\\"]}}.{}'))).result", node_type, node_type, node_name, concepts, BQ_JSON_FORMAT_SUFFIX)
             }
             "get_related_facts_llm" => {
                 let arg_parts = Self::split_sql_args(args);
                 let new_fact = arg_parts.first().copied().unwrap_or("''");
                 let existing_facts = arg_parts.get(1).copied().unwrap_or("''");
-                format!("(AI.GENERATE(CONCAT('A new fact has been learned: \"', {}, '\". Which of the following existing facts are directly related to it (causally, sequentially, or thematically)? Select only the most direct and meaningful connections.\\n\\nExisting Facts: ', {}, '\\n\\nReturn as JSON: {{\\\"related_facts\\\": [\\\"statement of a related fact\\\"]}}'))).result", new_fact, existing_facts)
+                format!("(AI.GENERATE(CONCAT('A new fact has been learned: \"', {}, '\". Which of the following existing facts are directly related to it (causally, sequentially, or thematically)? Select only the most direct and meaningful connections.\\n\\nExisting Facts: ', {}, '\\n\\nReturn as JSON: {{\\\"related_facts\\\": [\\\"statement of a related fact\\\"]}}.{}'))).result", new_fact, existing_facts, BQ_JSON_FORMAT_SUFFIX)
             }
             "find_best_link_concept" => {
                 let arg_parts = Self::split_sql_args(args);
                 let candidate = arg_parts.first().copied().unwrap_or("''");
                 let existing = arg_parts.get(1).copied().unwrap_or("''");
-                format!("(AI.GENERATE(CONCAT('Here is a new candidate concept: \"', {}, '\". Which of the following existing concepts is it most closely related to? The relationship could be as a sub-category, a similar idea, or a related domain. Respond with the single best-fit concept from the list, or \"none\" if it is genuinely new.\\n\\nExisting Concepts: ', {}, '\\n\\nReturn as JSON: {{\\\"best_link_concept\\\": \\\"The single best concept name OR none\\\"}}'))).result", candidate, existing)
+                format!("(AI.GENERATE(CONCAT('Here is a new candidate concept: \"', {}, '\". Which of the following existing concepts is it most closely related to? The relationship could be as a sub-category, a similar idea, or a related domain. Respond with the single best-fit concept from the list, or \"none\" if it is genuinely new.\\n\\nExisting Concepts: ', {}, '\\n\\nReturn as JSON: {{\\\"best_link_concept\\\": \\\"The single best concept name OR none\\\"}}.{}'))).result", candidate, existing, BQ_JSON_FORMAT_SUFFIX)
             }
             "consolidate_facts" => {
                 let arg_parts = Self::split_sql_args(args);
                 let new_fact = arg_parts.first().copied().unwrap_or("''");
                 let existing_facts = arg_parts.get(1).copied().unwrap_or("''");
-                format!("(AI.GENERATE(CONCAT('A new fact has been learned: \"', {}, '\". Determine whether it duplicates or contradicts any of these existing facts. Return as JSON: {{\\\"action\\\": \\\"add|merge|replace|skip\\\", \\\"target_fact\\\": \\\"statement of existing fact or null\\\", \\\"final_statement\\\": \\\"merged statement or null\\\"}}.\\n\\nExisting Facts: ', {}))).result", new_fact, existing_facts)
+                format!("(AI.GENERATE(CONCAT('A new fact has been learned: \"', {}, '\". Determine whether it duplicates or contradicts any of these existing facts. Return as JSON: {{\\\"action\\\": \\\"add|merge|replace|skip\\\", \\\"target_fact\\\": \\\"statement of existing fact or null\\\", \\\"final_statement\\\": \\\"merged statement or null\\\"}}.{}\\n\\nExisting Facts: ', {}))).result", BQ_JSON_FORMAT_SUFFIX, new_fact, existing_facts)
             }
             "prune_fact_subset" => {
-                format!("(AI.GENERATE(CONCAT('From the following list of facts, select the most informative subset that preserves the core meaning without redundancy. Return as JSON: {{\\\"kept_facts\\\": [\\\"fact statement\\\"]}}.\\n\\nFacts: ', {}))).result", args)
+                format!("(AI.GENERATE(CONCAT('From the following list of facts, select the most informative subset that preserves the core meaning without redundancy. Return as JSON: {{\\\"kept_facts\\\": [\\\"fact statement\\\"]}}.{}\\n\\nFacts: ', {}))).result", BQ_JSON_FORMAT_SUFFIX, args)
             }
             _ => {
                 format!("(AI.GENERATE({})).result", args)
