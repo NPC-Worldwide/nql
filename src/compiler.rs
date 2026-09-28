@@ -322,7 +322,7 @@ impl Compiler {
                 format!("(AI.GENERATE(CONCAT('Analyze the sentiment of the following text. Respond with exactly one word: positive, negative, or neutral.\\n\\n', {}))).result", args)
             }
             "get_facts" => {
-                format!("(AI.GENERATE(CONCAT('Extract facts from this text. A fact is a specific statement that can be sourced from the text. Return as JSON array of objects with \"statement\", \"source_text\", and \"type\" (explicit or inferred) fields.{}\\n\\nText: ', {}))).result", BQ_JSON_FORMAT_SUFFIX, args)
+                format!("(AI.GENERATE(CONCAT('Extract facts from this text. A fact is a specific statement that can be sourced from the text. Return as JSON array of objects with \"statement\", \"source_text\", and \"type\" (explicit or inferred) fields. ABSOLUTE RULE: state every fact directly as a concrete domain claim; NEVER use meta-textual framing such as \"the text mentions\", \"the text refers to\", \"the content states\", \"according to the text\", or \"the passage says\".{}\\n\\nText: ', {}))).result", BQ_JSON_FORMAT_SUFFIX, args)
             }
             "identify_groups" => {
                 format!("(AI.GENERATE(CONCAT('What are the main groups these items could be organized into? Return as JSON array of group names.{}\\n\\nItems: ', {}))).result", BQ_JSON_FORMAT_SUFFIX, args)
