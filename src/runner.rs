@@ -161,24 +161,44 @@ impl Runner {
     }
 
     /// Compile all models and execute them against BigQuery via the `bq` CLI,
-    /// in dependency order.
+    /// in dependency order. Each query is tagged with a unique job id so we can
+    /// retrieve and log bytes scanned after it finishes.
     pub fn execute_bigquery(&self) -> Result<(), RunnerError> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
         let results = self.compile_all()?;
 
-        let mut bq_args: Vec<String> = vec![
+        let mut query_args: Vec<String> = vec![
             "query".to_string(),
             "--use_legacy_sql=false".to_string(),
             "--format=none".to_string(),
         ];
+        let mut show_flags: Vec<String> = vec!["--format=json".to_string()];
         if let Ok(project) = std::env::var("NQL_BQ_PROJECT") {
-            bq_args.push(format!("--project_id={}", project));
+            query_args.push(format!("--project_id={}", project));
+            show_flags.push(format!("--project_id={}", project));
         }
         if let Ok(location) = std::env::var("NQL_BQ_LOCATION") {
-            bq_args.push(format!("--location={}", location));
+            query_args.push(format!("--location={}", location));
+            show_flags.push(format!("--location={}", location));
         }
 
+        let mut total_bytes: u64 = 0;
+
         for (name, sql) in results {
-            eprintln!("[nql] Executing model on BigQuery: {}", name);
+            let job_id = format!(
+                "nql_{}_{}_{}",
+                name.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "_"),
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            );
+            let mut bq_args = query_args.clone();
+            bq_args.push(format!("--job_id={}", job_id));
+
+            eprintln!("[nql] Executing model on BigQuery: {} (job_id={})", name, job_id);
             let mut child = std::process::Command::new("bq")
                 .args(&bq_args)
                 .stdin(std::process::Stdio::piped())
@@ -193,6 +213,10 @@ impl Runner {
             let status = child
                 .wait_with_output()
                 .map_err(|e| RunnerError::Compilation(format!("Failed waiting for bq: {}", e)))?;
+
+            // Log cost regardless of success/failure if the job was created.
+            let _ = Self::log_bq_job_cost(&show_flags, &job_id, &name);
+
             if !status.status.success() {
                 return Err(RunnerError::Compilation(format!(
                     "bq query failed for model '{}': {}",
@@ -200,9 +224,92 @@ impl Runner {
                     String::from_utf8_lossy(&status.stderr)
                 )));
             }
+
+            if let Some(bytes) = Self::bytes_from_bq_job(&show_flags, &job_id) {
+                total_bytes += bytes;
+            }
         }
 
+        let gb = total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+        let tb = total_bytes as f64 / (1024.0 * 1024.0 * 1024.0 * 1024.0);
+        eprintln!(
+            "[nql][cost] TOTAL bytes processed this nql run: {} ({:.6} GB)",
+            total_bytes, gb
+        );
+        eprintln!(
+            "[nql][cost] At $5/TB, estimated query scan cost: ${:.6}",
+            tb * 5.0
+        );
+
         Ok(())
+    }
+
+    fn log_bq_job_cost(show_flags: &[String], job_id: &str, model: &str) -> Option<()> {
+        let output = std::process::Command::new("bq")
+            .args(show_flags)
+            .arg("show")
+            .arg("-j")
+            .arg(job_id)
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+        let query_stats = json
+            .get("statistics")
+            .and_then(|s| s.get("query"))
+            .cloned()
+            .unwrap_or_default();
+        let job_id_out = json
+            .get("jobReference")
+            .and_then(|j| j.get("jobId"))
+            .and_then(|j| j.as_str())
+            .unwrap_or(job_id);
+        let bytes = query_stats
+            .get("totalBytesProcessed")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<u64>().ok());
+        let cache_hit = query_stats
+            .get("cacheHit")
+            .and_then(|v| v.as_bool())
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| "None".to_string());
+        let billing_tier = query_stats
+            .get("billingTier")
+            .and_then(|v| v.as_i64())
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "None".to_string());
+
+        if let Some(b) = bytes {
+            let gb = b as f64 / (1024.0 * 1024.0 * 1024.0);
+            eprintln!(
+                "[nql][cost] {}: {} processed {:.6} GB (cache_hit={}, tier={})",
+                model, job_id_out, gb, cache_hit, billing_tier
+            );
+        } else {
+            eprintln!("[nql][cost] {}: {} (no bytes metric)", model, job_id_out);
+        }
+        Some(())
+    }
+
+    fn bytes_from_bq_job(show_flags: &[String], job_id: &str) -> Option<u64> {
+        let output = std::process::Command::new("bq")
+            .args(show_flags)
+            .arg("show")
+            .arg("-j")
+            .arg(job_id)
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+        json.get("statistics")
+            .and_then(|s| s.get("query"))
+            .and_then(|q| q.get("totalBytesProcessed"))
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<u64>().ok())
     }
 
     /// Compile all models and return the SQL strings (for non-SQLite targets).

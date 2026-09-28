@@ -178,6 +178,7 @@ pub fn register_all_functions(conn: &Connection) -> rusqlite::Result<()> {
     register_udf(conn, "get_facts", &config, |text| {
         format!(
             "Extract facts from this text. A fact is a specific statement that can be sourced from the text.\n\n\
+            ABSOLUTE RULE: state every fact directly as a concrete domain claim; NEVER use meta-textual framing such as \"the text mentions\", \"the text refers to\", \"the content states\", \"according to the text\", or \"the passage says\".\n\n\
             Text: \"{}\"\n\n\
             Return as JSON array of objects with \"statement\", \"source_text\", and \"type\" (explicit or inferred) fields.",
             text
