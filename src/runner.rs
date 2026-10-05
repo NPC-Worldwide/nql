@@ -198,7 +198,10 @@ impl Runner {
             let mut bq_args = query_args.clone();
             bq_args.push(format!("--job_id={}", job_id));
 
-            eprintln!("[nql] Executing model on BigQuery: {} (job_id={})", name, job_id);
+            eprintln!(
+                "[nql] Executing model on BigQuery: {} (job_id={})",
+                name, job_id
+            );
             let mut child = std::process::Command::new("bq")
                 .args(&bq_args)
                 .stdin(std::process::Stdio::piped())
