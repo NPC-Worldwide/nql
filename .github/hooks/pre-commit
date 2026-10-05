@@ -1,0 +1,16 @@
+#!/bin/sh
+# NQL pre-commit hook: run the same checks as CI before allowing a commit.
+# To install: cp .github/hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+
+set -e
+
+echo "[pre-commit] Running cargo fmt --all -- --check"
+cargo fmt --all -- --check
+
+echo "[pre-commit] Running cargo clippy --all-targets -- -D warnings"
+cargo clippy --all-targets -- -D warnings
+
+echo "[pre-commit] Running cargo test --all"
+cargo test --all
+
+echo "[pre-commit] OK"

@@ -7,7 +7,7 @@ use nql::compiler::Target;
 use nql::runner::Runner;
 
 #[derive(Parser)]
-#[command(name = "nql", about = "NQL — SQL compiler with AI function calls")]
+#[command(name = "nql", about = "NQL — SQL compiler with AI function calls", version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
