@@ -200,7 +200,7 @@ pub fn register_all_functions(conn: &Connection) -> rusqlite::Result<()> {
         format!("Classify the following text into one of these categories: {}. Return only the category name.\n\n{}", categories, text)
     })?;
 
-    register_udf(conn, "extract_json", &config, |text| {
+    register_udf(conn, "generate_json", &config, |text| {
         format!(
             "Extract structured data from this text and return as valid JSON:\n\n{}",
             text

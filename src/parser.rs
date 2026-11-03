@@ -59,7 +59,7 @@ pub const NQL_FUNCTIONS: &[&str] = &[
     "identify_groups",
     "classify",
     "classify_into",
-    "extract_json",
+    "generate_json",
     "detect_language",
     "answer_question",
     "generate_code",
