@@ -336,7 +336,7 @@ impl Compiler {
                 let categories = arg_parts.get(1).copied().unwrap_or("''");
                 format!("(AI.GENERATE(CONCAT('Classify the following text into one of these categories: ', {}, '. Return only the category name.\\n\\n', {}))).result", categories, col)
             }
-            "extract_json" => {
+            "generate_json" => {
                 format!("(AI.GENERATE(CONCAT('Extract structured data from this text and return as valid JSON.{}\\n\\n', {}))).result", BQ_JSON_FORMAT_SUFFIX, args)
             }
             "detect_language" => {
