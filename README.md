@@ -161,7 +161,7 @@ The full npc data layer context — and the rest of the npc ecosystem:
 
 ## Contributing
 
-Contributions welcome — open an issue first to discuss larger changes. All committers are expected to follow the [Code of Conduct](https://github.com/NPC-Worldwide/nql/blob/main/CODE_OF_CONDUCT.md) if one exists.
+Contributions welcome — open an issue first to discuss larger changes.
 
 ## License
 
